@@ -47,61 +47,37 @@ I use coding agents every day, and I kept running into the same four problems.
 
 ## Quick start
 
-Requires Python 3.11+ and git. Your overlay is a folder or git repository with an `overlay.toml`; see [personalizing](docs/personalizing.md). With no overlay, the installer makes `~/code-jig-overlay` for you.
-
-### From a release (no git checkout)
-
-<!-- install:start -->
-Latest release: **v0.12.0**. Everything downloads from GitHub. Copy a block as it is; it runs without edits.
-
-Linux and macOS:
+Requires Python 3.11+, git and [pipx](https://pipx.pypa.io/).
 
 ```sh
-curl -fsSL https://github.com/jeancarlos/code-jig/releases/download/v0.12.0/bootstrap.py | python3 -I -
-```
-
-Windows (PowerShell):
-
-```powershell
-irm https://github.com/jeancarlos/code-jig/releases/download/v0.12.0/bootstrap.py -OutFile bootstrap.py
-py -3 -I bootstrap.py
-```
-
-To use your own overlay instead of the default `~/code-jig-overlay`, add `--overlay` and its folder or git URL at the end of the `python3`/`py` line, for example `--overlay ~/my-overlay`.
-
-A piped script cannot check itself. To read what you run, download only `bootstrap.py`, read it, then run it:
-
-```sh
-curl -fsSL -o bootstrap.py https://github.com/jeancarlos/code-jig/releases/download/v0.12.0/bootstrap.py
-python3 -I bootstrap.py
-```
-
-`bootstrap.py` has no checksum of its own; reading it is the check. The bootstrap downloads the zip itself and checks it against the release's `SHA256SUMS`. That catches a corrupted download, but not a compromised GitHub release. Releases before v0.11.0 have no zip.
-
-**No one-liner allowed?** On a machine that blocks the download or PATH edits, download `code-jig.zip`, `SHA256SUMS` and `bootstrap.py` from the [v0.12.0 release page](https://github.com/jeancarlos/code-jig/releases/tag/v0.12.0) into one folder and run `py -3 -I bootstrap.py --zip code-jig.zip` there (`python3 -I` on Linux and macOS). The launcher does not need to be on PATH: the generated `AGENTS.md` tells agents its full path.
-<!-- install:end -->
-
-The bootstrap unpacks the release into `~/.local/share/code-jig/vX.Y.Z/` (`%LOCALAPPDATA%\code-jig\vX.Y.Z\` on Windows), runs `install`, writes `code-jig` and `cjig` launchers in `~/.local/bin` and runs `doctor`. The overlay's `core_version` picks the release. To change it, edit `core_version` and run the bootstrap again; see [upgrade and rollback](docs/runbooks/upgrade-and-rollback.md).
-
-### From a checkout (to change the core)
-
-```sh
-git clone https://github.com/jeancarlos/code-jig
-cp -r code-jig/overlay-examples/personal ~/code-jig-overlay   # your overlay
-export CODE_JIG_OVERLAY=~/code-jig-overlay
-cd code-jig
-./install.sh                                  # Windows: py -3 -m codejig install
-PYTHONPATH=. python3 -m codejig doctor
+pipx install code-jig
+code-jig init-overlay
+code-jig install
+code-jig doctor
 codex --profile default
 ```
 
-Edit `~/code-jig-overlay/profiles.toml` to pick your models; `doctor` lists the ones your account can use.
+`init-overlay` writes a starter overlay to `~/code-jig-overlay` (pass a folder to put it elsewhere, then point `CODE_JIG_OVERLAY` or `--overlay` at it). Edit its `profiles.toml` to pick your models; `doctor` lists the ones your account can use. See [personalizing](docs/personalizing.md). On Windows, run the same commands in PowerShell after `py -3 -m pip install --user pipx` and `py -3 -m pipx ensurepath`.
 
-### What the install counts
+The wheel is published to PyPI from CI with Trusted Publishing, and it is the same file as the one on the GitHub release (CI checks the attestation and the sha256 before uploading).
 
-The tool sends nothing. The download site counts requests for `bootstrap.py` and for release zips, and stores the event, the version, the client type (curl, PowerShell, Python or other) and the country. It does not store your IP address, your user-agent string or any install ID. The counts are request counts, not installs. See [ADR 0027](docs/adr/0027-install-from-a-release-url.md).
+### Upgrade and pin
 
-**Prefer pipx?** `pipx install code-jig` installs the same release files as a wheel from PyPI, published from CI with Trusted Publishing and a PyPI attestation. Pick the overlay with `--overlay` and run `code-jig install` and `code-jig doctor`; `core_version` must match the installed version, and `pipx install code-jig==X.Y.Z` pins it. The first PyPI release is v0.12.0.
+`pipx upgrade code-jig` moves to the latest release; `pipx install --force code-jig==X.Y.Z` installs one version. The overlay's `core_version` is a pin: `doctor` compares it with the installed version, so bump it with every upgrade or rollback, then run `code-jig install` and `code-jig doctor`. See [upgrade and rollback](docs/runbooks/upgrade-and-rollback.md).
+
+### Development build
+
+To try a change before it is released, build a wheel from your checkout (it packs the committed `HEAD`):
+
+```sh
+python3 -m pip install --require-hashes -r ci/build.txt   # in a venv
+python3 .github/scripts/build_wheel.py                    # writes dist/code_jig-<version>-py3-none-any.whl
+pipx install --force dist/code_jig-*.whl
+```
+
+Or bump `VERSION` and the overlay examples' `core_version` to `X.Y.Z-rcN` and push a `vX.Y.Z-rcN` tag. That makes a signed GitHub pre-release with the wheel and never publishes to PyPI; install it with `pipx install --force <wheel URL from the pre-release>`.
+
+To change the core itself, `pip install -e .` in a venv runs the checkout directly: with no packaged data next to the code, code-jig uses the repository root as its core.
 
 ## Documentation
 
@@ -132,12 +108,15 @@ The tool sends nothing. The download site counts requests for `bootstrap.py` and
 
 ## Verify a release
 
-Every release asset has a Sigstore bundle (`<asset>.sigstore.json`), a SLSA build provenance file (`code-jig.intoto.jsonl`) and an SPDX SBOM (`code-jig.spdx.json`). Verify with:
+Each GitHub release carries the wheel, `SHA256SUMS`, an SPDX SBOM (`code-jig.spdx.json`), a Sigstore bundle per file (`<file>.sigstore.json`) and the SLSA build provenance (`code-jig.intoto.jsonl`). Download the wheel and its bundle from the release page (`pip download code-jig==X.Y.Z --no-deps` gets the same file from PyPI), then:
 
 ```
-gh attestation verify code-jig.zip --repo jeancarlos/code-jig
-cosign verify-blob code-jig.zip --bundle code-jig.zip.sigstore.json --certificate-identity-regexp '^https://github.com/jeancarlos/code-jig/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+gh attestation verify code_jig-X.Y.Z-py3-none-any.whl --repo jeancarlos/code-jig
+cosign verify-blob code_jig-X.Y.Z-py3-none-any.whl --bundle code_jig-X.Y.Z-py3-none-any.whl.sigstore.json --certificate-identity-regexp '^https://github.com/jeancarlos/code-jig/' --certificate-oidc-issuer https://token.actions.githubusercontent.com
+pipx install ./code_jig-X.Y.Z-py3-none-any.whl
 ```
+
+After install, `doctor` with `core_writable = false` checks every packaged module and data file against the digest in the wheel's `VERSION` file. That digest catches edits after install; the signature and the attestation are what prove where the wheel came from.
 
 ## License
 

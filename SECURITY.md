@@ -10,10 +10,10 @@ Include the affected version (`code-jig --version`), the platform, and the small
 
 code-jig writes configuration for Codex and runs hooks on the user's machine. In scope:
 
-- a way to make the installer, bootstrap or a hook write outside the paths it manages, run a command it should not, or skip a check it should run;
+- a way to make `install`, `init-overlay` or a hook write outside the paths it manages, run a command it should not, or skip a check it should run;
 - a way to bypass the git gate, the watermark gate or the scrub of AI attribution;
 - a secret or private overlay content that reaches the public core or a release asset;
-- a weakness in how release assets are verified (`SHA256SUMS`, signatures, provenance).
+- a weakness in how release assets are verified (`SHA256SUMS`, signatures, provenance), or a PyPI wheel that differs from the attested GitHub release asset.
 
 Out of scope: vulnerabilities in Codex, Python or GitHub themselves, and issues that need an attacker who already controls the user's account or overlay.
 
@@ -25,4 +25,4 @@ Out of scope: vulnerabilities in Codex, Python or GitHub themselves, and issues 
 
 ## Supported versions
 
-Only the latest release receives security fixes. Releases are signed with Sigstore and carry SLSA provenance; verify them before installing, as described in the README.
+Only the latest release receives security fixes. Releases are published to PyPI and as GitHub releases, signed with Sigstore and carrying SLSA provenance; verify the wheel before installing, as described in the README. `-rc` pre-releases are for testing and receive no fixes.

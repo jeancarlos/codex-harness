@@ -12,14 +12,17 @@ Core is shared and pinned. The overlay is a separate directory with fixed slots:
 - `skills/<name>/SKILL.md`: your own skills, installed next to the core ones. A name the core already uses is an error.
 - `knowledge/`: one fact per file, plus `knowledge/INDEX.md` with one line per fact. When the index exists, the generated `AGENTS.md` points Codex at it. Keep it at 150 lines or fewer; `doctor` warns past that. The `improve` skill maintains it. Pass it with `--overlay <dir>` or `CODE_JIG_OVERLAY`.
 
+## Starting an overlay
+`code-jig init-overlay [PATH]` copies the `personal` example (shipped inside the package) to `PATH`, by default `~/code-jig-overlay`, and prints the next steps. It refuses a folder that already has files in it. Every command finds `~/code-jig-overlay` on its own; for another folder set `CODE_JIG_OVERLAY` or pass `--overlay`. The examples live in [overlay-examples](../overlay-examples): `personal` for your own machine and `enterprise` for a locked-down one.
+
 ## Private overlay
-Keep your overlay in its own private repo. Never put it inside the core checkout. See `overlay-examples/personal`, and `overlay-examples/enterprise` for a locked-down machine.
+Keep your overlay in its own private repo. Never put it inside the core checkout.
 
 ## core_writable
-`core_writable = false` means nothing may edit the core; `doctor` checks the core tree is unchanged. Set it to true only if you intend to change the core; the `improve` skill honours it.
+`core_writable = false` means nothing may edit the core; `doctor` checks that every installed module and data file still matches the release digest in the package's `VERSION` file (or, in a checkout, that the git tree is clean). Set it to true only if you intend to change the core; the `improve` skill honours it.
 
 ## Pinning core_version
-Pin `core_version` to a tag (for example v0.8.0). `doctor` reports `ok core pin: v0.8.0`, and FAILs a core that is not a git checkout.
+Pin `core_version` to the installed version as a tag (for example v0.12.0; `code-jig --version` prints it). `init-overlay` writes the current one. `doctor` reports `ok core pin: v0.12.0`, and reports a mismatch (FAIL with `core_writable = false`, a warning otherwise) after a `pipx upgrade` until you bump the pin. In a checkout the pin is compared with the tag at `HEAD`.
 
 ## Clean-room rule
 Contribute upstream only what you wrote without copying from private overlays or employer material. No corporate measurements anywhere in the core.
