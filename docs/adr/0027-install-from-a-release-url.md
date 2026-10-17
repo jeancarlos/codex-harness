@@ -1,6 +1,6 @@
 # 0027: Install from a release URL
 
-Status: accepted (2026-10-16)
+Status: superseded by [0029](0029-install-from-pypi-only.md) (2026-10-17); accepted 2026-10-16
 
 ## Decision
 

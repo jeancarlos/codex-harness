@@ -48,7 +48,7 @@ RENAME: list[tuple[str, str | Callable[[re.Match], str]]] = [
     (re.escape('3. **Challenge.** A `reviewer` reads the evidence files and the check report, and is told not to search. It rules on every claim with one line each, `OK`, `DOUBT` or `MISMATCH`, then lists the questions that would settle each dispute.\n'),
      '3. **Challenge.** A `reviewer` reads the evidence files and the check report, and is told not to search. Its brief asks for a sweep before anything else: one line per claim, in order, none skipped or merged. `MISMATCH` when the quote does not contain what the claim asserts, `DOUBT` when the quote alone cannot tell (a number, a name, a baseline or a causal link it never states), `OK` only when the quote plainly carries the whole claim, each claim judged against its own quote. The sweep comes first because a reviewer that picks its findings first stops at the few defects that caught its eye. Tell it that a wrong flag costs one rebuttal while a fabrication it lets pass reaches the user as fact, so it flags every claim its quote does not plainly establish, and never invents a mismatch. Then it lists the questions that would settle each dispute.\n'),
 ]
-EXAMPLES = ("enterprise", "personal", "release")
+EXAMPLES = ("enterprise", "personal")
 FIXTURES = Path(__file__).resolve().parent / "fixtures" / "golden"
 KEPT = ("AGENTS.md", "hooks.json")
 

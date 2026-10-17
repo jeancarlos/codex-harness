@@ -1,4 +1,0 @@
-default = "gpt-6.1-sol"
-deep = "gpt-6-astra"
-bulk = "gpt-6-luna"
-review = "gpt-6-astra"

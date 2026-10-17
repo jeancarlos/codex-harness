@@ -17,6 +17,7 @@ Source = "https://github.com/jeancarlos/code-jig"
 
 [project.scripts]
 code-jig = "codejig.__main__:main"
+cjig = "codejig.__main__:main"
 
 [tool.hatch.version]
 path = "codejig/__init__.py"

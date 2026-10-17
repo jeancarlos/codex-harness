@@ -1,4 +1,5 @@
 import io
+import re
 import shutil
 import subprocess
 import sys
@@ -6,25 +7,38 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from build_release import TAG, archive
+ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(ROOT))
 
 from codejig import VERSION
-from codejig.install import release_digest
+from codejig.doctor import package_digest
 
-DATA = ("core", "skills", "bench")
+TAG = re.compile(r"v\d+\.\d+\.\d+(?:-rc\d+)?")
+HIDDEN = (".github", "ci", "fuzz", ".clusterfuzzlite", "SECURITY.md")
+DATA = ("core", "skills", "bench", "overlay-examples")
+
+
+def archive() -> bytes:
+    return subprocess.run(["git", "-C", str(ROOT), "archive", "--format=zip", "--worktree-attributes", "HEAD", "--", ".",
+                           *(f":(exclude){p}" for p in HIDDEN)], check=True, capture_output=True).stdout
+
+
+def valid(tag: str) -> bool:
+    return bool(TAG.fullmatch(tag)) and tag == f"v{VERSION}"
 
 
 def stage(tag: str, root: Path) -> None:
     zipfile.ZipFile(io.BytesIO(archive())).extractall(root)
-    core = root / "codejig" / "_core"
+    code = root / "codejig"
+    core = code / "_core"
     core.mkdir()
     for name in DATA:
         shutil.move(root / name, core / name)
-    (core / "VERSION").write_text(f"{tag}\n{release_digest(core)}\n", encoding="utf-8", newline="\n")
+    (core / "VERSION").write_text(f"{tag}\n{package_digest(code)}\n", encoding="utf-8", newline="\n")
 
 
 def build(tag: str, out: Path) -> None:
-    if not TAG.fullmatch(tag) or tag != f"v{VERSION}":
+    if not valid(tag):
         raise SystemExit(f"build_wheel: tag {tag} does not match code-jig VERSION {VERSION}")
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
@@ -33,5 +47,9 @@ def build(tag: str, out: Path) -> None:
                        check=True)
 
 
+def main(argv: list[str]) -> None:
+    build(argv[0] if argv else f"v{VERSION}", Path(argv[1]) if len(argv) > 1 else ROOT / "dist")
+
+
 if __name__ == "__main__":
-    build(sys.argv[1], Path(sys.argv[2]))
+    main(sys.argv[1:])

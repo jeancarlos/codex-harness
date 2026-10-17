@@ -1,7 +1,6 @@
 * text=auto eol=lf
 tests/** export-ignore
 docs/** export-ignore
-worker/** export-ignore
 bench/** export-ignore
 bench/requirements.toml -export-ignore
 skills/*/evals/** export-ignore

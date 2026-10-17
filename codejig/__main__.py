@@ -4,9 +4,12 @@ import argparse
 import importlib
 import sys
 
+from codejig import VERSION
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="code-jig")
+    p.add_argument("--version", action="version", version=f"code-jig {VERSION}")
     p.add_argument("--overlay")
     p.add_argument("--codex-home")
     sub = p.add_subparsers(dest="cmd", required=True)
@@ -67,6 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     sk.add_argument("--profile", default="default")
     sk.add_argument("--codex-bin")
     sk.add_argument("--trust-evals", action="store_true")
+    ini = sub.add_parser("init-overlay")
+    ini.add_argument("path", nargs="?")
     cs = sub.add_parser("check-sources")
     cs.add_argument("files", nargs="+")
     return p
@@ -87,6 +92,7 @@ COMMAND_MODULES = {
     "git-hook": "gitgate",
     "skill-check": "skillcheck",
     "check-sources": "sources",
+    "init-overlay": "overlay",
 }
 
 
