@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import mmap
 import os
@@ -14,7 +15,6 @@ from codejig.install import (
     ROLE_TIERS,
     _git_config,
     _same_path,
-    release_digest,
     render_agents,
     render_profile,
     role_files,
@@ -291,6 +291,19 @@ def _git(core: Path, *args: str) -> subprocess.CompletedProcess | None:
         return None
 
 
+def package_digest(code: Path) -> str:
+    h = hashlib.sha256()
+    files = []
+    for p in code.rglob("*"):
+        rel = p.relative_to(code)
+        if p.is_file() and "__pycache__" not in rel.parts and rel.as_posix() != "_core/VERSION":
+            files.append((rel.as_posix().encode(), p))
+    for rel, p in sorted(files):
+        data = p.read_bytes()
+        h.update(len(rel).to_bytes(8, "big") + rel + len(data).to_bytes(8, "big") + data)
+    return h.hexdigest()
+
+
 def check_release(core: Path, ov: Overlay) -> list[Check]:
     strict = "FAIL" if not ov.core_writable else "warn"
     try:
@@ -302,9 +315,9 @@ def check_release(core: Path, ov: Overlay) -> list[Check]:
         strict, "core pin", f"core is release {tag or 'unknown'}, overlay pins {ov.core_version}")
     if ov.core_writable:
         return [pin, ("ok", "core clean", "release core; local edits allowed")]
-    if digest and digest == release_digest(core):
+    if digest and digest == package_digest(core.parent):
         return [pin, ("ok", "core clean", "matches its release digest")]
-    return [pin, ("FAIL", "core clean", "core differs from its release digest but core_writable = false")]
+    return [pin, ("FAIL", "core clean", f"{core.parent} differs from its release digest but core_writable = false")]
 
 
 def _git_failure(core: Path, ov: Overlay, strict: str, status) -> list[Check]:

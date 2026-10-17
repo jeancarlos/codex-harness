@@ -1,6 +1,11 @@
+import os
+import shutil
+import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+
+from codejig import VERSION, paths
 
 REQUIRED = ("core_version", "core_writable")
 
@@ -41,3 +46,28 @@ def load(root: Path) -> Overlay:
     compact = data.get("auto_compact_token_limit")
     flags = _flags(path, data, compact)
     return Overlay(root, str(data["core_version"]), data["core_writable"], compact, **flags)
+
+
+def init(target: Path) -> Path:
+    target = target.expanduser().absolute()
+    if target.exists() and (not target.is_dir() or any(target.iterdir())):
+        raise FileExistsError(f"{target} exists and is not empty")
+    shutil.copytree(paths.CORE / "overlay-examples" / "personal", target, dirs_exist_ok=True)
+    return target
+
+
+def cli(args) -> int:
+    try:
+        target = init(Path(args.path) if args.path else paths.default_overlay())
+    except FileExistsError as e:
+        print(f"code-jig: {e}; pick an empty folder", file=sys.stderr)
+        return 1
+    env = f'$env:CODE_JIG_OVERLAY = "{target}"' if os.name == "nt" else f"export CODE_JIG_OVERLAY='{target}'"
+    default = target == paths.default_overlay()
+    print(f"code-jig: starter overlay written to {target} (core_version = v{VERSION})\n"
+          "next:\n"
+          f"  1. edit {target / 'profiles.toml'} to pick your models and {target / 'AGENTS.overlay.md'} for your rules\n"
+          f"  2. {'code-jig finds this folder by default' if default else env}\n"
+          "  3. code-jig install\n"
+          "  4. code-jig doctor")
+    return 0

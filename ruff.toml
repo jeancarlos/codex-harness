@@ -1,7 +1,6 @@
 extend-exclude = ["tests/fixtures"]
 
 [lint.per-file-ignores]
-"bootstrap.py" = ["UP036"]
 "codejig/__main__.py" = ["UP036"]
 "codejig/install.py" = ["UP036"]
 "codejig/collect.py" = ["BLE001"]

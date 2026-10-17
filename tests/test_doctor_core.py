@@ -6,8 +6,8 @@ import types
 import unittest
 from unittest import mock
 
-from codejig.doctor import check_core, check_global, cli
-from codejig.install import release_digest, render_agents, stamp
+from codejig.doctor import check_core, check_global, cli, package_digest
+from codejig.install import render_agents, stamp
 from codejig.overlay import Overlay
 from tests.util import tree, write
 
@@ -116,9 +116,11 @@ class GlobalAgents(unittest.TestCase):
 
 class Release(unittest.TestCase):
     def setUp(self):
-        self.core = tree(self) / "core"
-        write(self.core / "codejig" / "x.py", "a\n")
-        write(self.core / "VERSION", f"v0.1.0\n{release_digest(self.core)}\n")
+        self.code = tree(self) / "codejig"
+        self.core = self.code / "_core"
+        write(self.code / "x.py", "a\n")
+        write(self.core / "core" / "AGENTS.core.md", "rules\n")
+        write(self.core / "VERSION", f"v0.1.0\n{package_digest(self.code)}\n")
 
     def levels(self, ov):
         return {name: level for level, name, _ in check_core(self.core, ov)}
@@ -126,21 +128,31 @@ class Release(unittest.TestCase):
     def test_matching_release_is_ok(self):
         self.assertEqual(self.levels(Overlay(self.core, "v0.1.0", False)), {"core pin": "ok", "core clean": "ok"})
 
-    def test_edited_release_fails_readonly_ok_writable(self):
-        write(self.core / "codejig" / "x.py", "b\n")
+    def test_edited_code_or_data_fails_readonly_ok_writable(self):
+        for rel in ("x.py", "_core/core/AGENTS.core.md"):
+            with self.subTest(rel=rel):
+                original = (self.code / rel).read_text(encoding="utf-8")
+                write(self.code / rel, "tampered\n")
+                self.assertEqual(self.levels(Overlay(self.core, "v0.1.0", False))["core clean"], "FAIL")
+                self.assertEqual(self.levels(Overlay(self.core, "v0.1.0", True))["core clean"], "ok")
+                write(self.code / rel, original)
+                self.assertEqual(self.levels(Overlay(self.core, "v0.1.0", False))["core clean"], "ok")
+
+    def test_added_module_fails_readonly(self):
+        write(self.code / "extra.py", "import os\n")
         self.assertEqual(self.levels(Overlay(self.core, "v0.1.0", False))["core clean"], "FAIL")
-        self.assertEqual(self.levels(Overlay(self.core, "v0.1.0", True))["core clean"], "ok")
 
     def test_wrong_pin_readonly_fails_writable_warns(self):
         self.assertEqual(self.levels(Overlay(self.core, "v9.9.9", False))["core pin"], "FAIL")
         self.assertEqual(self.levels(Overlay(self.core, "v9.9.9", True))["core pin"], "warn")
 
     def test_pycache_and_version_are_not_digested(self):
-        write(self.core / "codejig" / "__pycache__" / "x.cpython-313.pyc", "bytecode")
+        write(self.code / "__pycache__" / "x.cpython-313.pyc", "bytecode")
+        write(self.core / "core" / "__pycache__" / "y.pyc", "bytecode")
         self.assertEqual(self.levels(Overlay(self.core, "v0.1.0", False)), {"core pin": "ok", "core clean": "ok"})
 
     def test_parent_git_repo_does_not_count(self):
-        git(self.core.parent, "init", "-q")
+        git(self.code.parent, "init", "-q")
         self.assertEqual(self.levels(Overlay(self.core, "v0.1.0", False)), {"core pin": "ok", "core clean": "ok"})
 
     def test_unreadable_version_fails(self):
@@ -155,15 +167,23 @@ class Release(unittest.TestCase):
         self.assertEqual((levels["core pin"], levels["core clean"]), ("FAIL", "FAIL"))
 
 
-class ReleaseDigest(unittest.TestCase):
-    def test_order_is_by_posix_string(self):
+class PackageDigest(unittest.TestCase):
+    def test_order_is_by_posix_string_with_length_framing(self):
         root = tree(self)
         write(root / "a-b" / "x", "1")
         write(root / "a" / "b", "2")
         h = hashlib.sha256()
         for rel in sorted(["a-b/x", "a/b"]):
-            h.update(rel.encode() + b"\0" + (root / rel).read_bytes() + b"\0")
-        self.assertEqual(release_digest(root), h.hexdigest())
+            data = (root / rel).read_bytes()
+            h.update(len(rel).to_bytes(8, "big") + rel.encode() + len(data).to_bytes(8, "big") + data)
+        self.assertEqual(package_digest(root), h.hexdigest())
+
+    def test_one_file_cannot_pose_as_two(self):
+        one, two = tree(self), tree(self)
+        write(one / "a", "x\0b\0y")
+        write(two / "a", "x")
+        write(two / "b", "y")
+        self.assertNotEqual(package_digest(one), package_digest(two))
 
 
 class Requirements(unittest.TestCase):

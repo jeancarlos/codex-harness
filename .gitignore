@@ -1,6 +1,6 @@
 __pycache__/
 *.tmp
 docs/deck/data.local.js
-worker/.wrangler/
 .coverage
 node_modules/
+dist/

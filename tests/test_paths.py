@@ -3,7 +3,6 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-import bootstrap
 from codejig import install, paths
 from codejig.overlay import Overlay, load
 from tests.util import tree
@@ -29,11 +28,6 @@ class StateDir(unittest.TestCase):
         fake = types.SimpleNamespace(name="nt", environ={})
         with mock.patch.object(paths, "os", fake):
             self.assertEqual(paths.state_dir(), Path.home() / "AppData" / "Local" / "code-jig")
-
-    def test_bootstrap_data_dir_without_localappdata_falls_back_under_home(self):
-        fake = types.SimpleNamespace(name="nt", environ={})
-        with mock.patch.object(bootstrap, "os", fake):
-            self.assertEqual(bootstrap.data_dir(None), Path.home() / "AppData" / "Local" / "code-jig")
 
     def test_install_puts_lib_and_git_hooks_in_the_state_dir(self):
         root = tree(self)
