@@ -85,7 +85,7 @@ jobs:
           cd release
           set -- *.whl
           test "$#" -eq 1
-          gh attestation verify "$1" --repo jeancarlos/code-jig
+          gh attestation verify "$1" --repo jeancarlos/code-jig --signer-workflow jeancarlos/code-jig/.github/workflows/release.yml
           grep -F "  $1" SHA256SUMS | sha256sum --strict -c -
           mkdir ../dist
           mv -- "$1" ../dist/
