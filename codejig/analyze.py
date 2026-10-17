@@ -60,6 +60,13 @@ class Tool:
     ok: tuple[int, ...] = (0,)
     reason: str = ""
     binary: str = ""
+    findings_exit: tuple[int, ...] = ()
+
+
+class Partial(ValueError):
+    def __init__(self, message: str, findings: list[Finding]):
+        super().__init__(message)
+        self.findings = findings
 
 
 @dataclass(frozen=True)
@@ -125,6 +132,9 @@ def changed(root: Path, base: str) -> set[str]:
         raise ValueError(f"{base}: {(mb.stderr.strip().splitlines() or ['not a commit'])[0]}")
     diff = _git(root, "diff", "--name-only", "--no-renames", "--relative", "-z", mb.stdout.strip())
     extra = _git(root, "ls-files", "--others", "--exclude-standard", "-z")
+    for r in (diff, extra):
+        if r.returncode != 0:
+            raise ValueError(f"git cannot list the changed files: {_first(r.stderr) or f'exit {r.returncode}'}")
     return {n for n in (diff.stdout + "\0" + extra.stdout).split("\0") if n}
 
 
@@ -279,8 +289,14 @@ def parse_knip(out: str, root: Path, tmp: Path) -> list[Finding]:
 
 
 def parse_semgrep(out: str, root: Path, tmp: Path) -> list[Finding]:
-    return [Finding("security", "semgrep", r["check_id"], rel(r["path"], root), int(r["start"]["line"]), r["extra"].get("message", ""))
-            for r in _json(out, dict).get("results") or []]
+    data = _json(out, dict)
+    found = [Finding("security", "semgrep", r["check_id"], rel(r["path"], root), int(r["start"]["line"]), r["extra"].get("message", ""))
+             for r in data.get("results") or []]
+    errors = data.get("errors") or []
+    if errors:
+        first = errors[0] if isinstance(errors[0], dict) else {"message": str(errors[0])}
+        raise Partial(f"{len(errors)} errors, first: {first.get('type', 'error')}: {first.get('message', '')}".strip(), found)
+    return found
 
 
 def parse_gitleaks(out: str, root: Path, tmp: Path) -> list[Finding]:
@@ -348,15 +364,15 @@ TOOLS = [
     Tool("vulture", "python", _vulture_args,
          parse_vulture, hint="pip install vulture", ok=(0, 3)),
     Tool("mypy", "python", lambda exe, root, tmp: [exe, "--no-error-summary", "--no-pretty", "--show-error-codes", "."],
-         parse_mypy, _has_mypy_config, "pip install mypy", reason="no mypy config"),
+         parse_mypy, _has_mypy_config, "pip install mypy", reason="no mypy config", findings_exit=(1,)),
     Tool("eslint", "node", lambda exe, root, tmp: [exe, ".", "-f", "json"], parse_eslint, _has_eslint_config,
-         "npm install -D eslint eslint-plugin-sonarjs", reason="no eslint config"),
+         "npm install -D eslint eslint-plugin-sonarjs", reason="no eslint config", findings_exit=(1,)),
     Tool("knip", "node", lambda exe, root, tmp: [exe, "--reporter", "json", "--no-progress"], parse_knip,
-         hint="npm install -D knip"),
+         hint="npm install -D knip", findings_exit=(1,)),
     Tool("tsc", "node", lambda exe, root, tmp: [exe, "--noEmit", "--pretty", "false", "-p", "."], parse_tsc,
-         lambda root: (root / "tsconfig.json").is_file(), "npm install -D typescript", reason="no tsconfig.json"),
+         lambda root: (root / "tsconfig.json").is_file(), "npm install -D typescript", reason="no tsconfig.json", findings_exit=(1, 2)),
     Tool("dotnet", "dotnet", lambda exe, root, tmp: [exe, "build", "--nologo", "--no-incremental", "-clp:NoSummary", *_dotnet_target(root)],
-         parse_dotnet, lambda root: bool(_dotnet_target(root)), "install the .NET SDK", reason="no solution or project at the root"),
+         parse_dotnet, lambda root: bool(_dotnet_target(root)), "install the .NET SDK", reason="no solution or project at the root", findings_exit=(1,)),
     Tool("semgrep", "any", lambda exe, root, tmp: [exe, "scan", "--metrics=off", "--disable-version-check", "--config", str(_semgrep_rules(root)), "--json", "--quiet", "."],
          parse_semgrep, lambda root: _semgrep_rules(root) is not None, "pip install semgrep", reason="no local rules (.semgrep.yml or .semgrep/)"),
     Tool("gitleaks", "any", lambda exe, root, tmp: [exe, "dir", *_GITLEAKS, str(tmp / "gitleaks.json"), "."],
@@ -404,13 +420,16 @@ def _run_one(t: Tool, exe: str, root: Path, env: dict, timeout: int) -> tuple[li
             return [], f"timed out after {timeout}s"
         except OSError as e:
             return [], f"cannot run: {e}"
+        error = None
         try:
             found = t.parse(out, root, tmp)
+        except Partial as e:
+            found, error = e.findings, str(e)
         except (ValueError, KeyError, TypeError, IndexError, AttributeError) as e:
             return [], f"unreadable output: {e}; {_first(err)}"
-    if code not in t.ok and not found:
-        return [], f"exit {code}: {_first(err) or _first(out)}"
-    return found, None
+    if code not in t.ok and (code not in t.findings_exit or not found):
+        error = f"exit {code}: {_first(err) or _first(out)}"
+    return found, error
 
 
 def _add_new(findings: list[Finding], seen: set, found: list[Finding]) -> None:

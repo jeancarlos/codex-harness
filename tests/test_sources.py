@@ -12,6 +12,8 @@ from unittest import mock
 from codejig import sources
 from tests.util import tree, write
 
+REAL_IS_PUBLIC_IP = sources.is_public_ip
+
 PAGES = {
     "/doc": (200, "text/html; charset=utf-8",
              ("<html><head><script>var hidden = 'not text';</script><style>p{}</style></head>"
@@ -23,6 +25,8 @@ PAGES = {
     "/pdf": (200, "application/pdf", "%PDF-1.7"),
     "/moved": (301, "text/html", ""),
     "/to-private": (301, "text/html", ""),
+    "/mb4": (200, "text/html; charset=utf8mb4", "<p>caf\u00e9 opens at nine</p>"),
+    "/short": (200, "text/plain", "ff\r\ncut short"),
 }
 
 
@@ -33,6 +37,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if status == 301:
             self.send_header("Location", "http://10.0.0.1/secret" if self.path == "/to-private" else "/doc")
         self.send_header("Content-Type", ctype)
+        if self.path == "/short":
+            self.send_header("Transfer-Encoding", "chunked")
         self.end_headers()
         self.wfile.write(body.encode("utf-8"))
 
@@ -97,6 +103,36 @@ class Sources(unittest.TestCase):
         verdict, detail = sources.fetch(f"{self.base}/to-private")
         self.assertEqual(verdict, "dead")
         self.assertIn("private", detail)
+
+    def test_nat64_addresses_are_judged_by_the_ipv4_they_carry(self):
+        self.assertFalse(REAL_IS_PUBLIC_IP("64:ff9b::a00:1"))
+        self.assertFalse(REAL_IS_PUBLIC_IP("64:ff9b::a9fe:a9fe"))
+        self.assertFalse(REAL_IS_PUBLIC_IP("64:ff9b:1::808:808"))
+        self.assertTrue(REAL_IS_PUBLIC_IP("64:ff9b::808:808"))
+
+    def test_an_unknown_or_binary_charset_falls_back_to_utf8(self):
+        for ctype in ("text/html; charset=utf8mb4", "text/plain; charset=hex", "text/plain; charset=zlib"):
+            with self.subTest(ctype=ctype):
+                self.assertEqual(sources.page_text("caf\u00e9 au lait".encode(), ctype), "caf\u00e9 au lait")
+
+    def test_one_broken_page_does_not_abort_the_batch(self):
+        rows = [{"claim": "a", "url": f"{self.base}/mb4", "quote": "caf\u00e9 opens"},
+                {"claim": "b", "url": f"{self.base}/short", "quote": "cut short"},
+                {"claim": "c", "url": f"{self.base}/doc", "quote": "default limit"}]
+        self.assertEqual(self.verdicts(rows), ["ok", "dead", "ok"])
+
+    def test_a_quote_past_the_read_limit_is_unverified_not_missing(self):
+        with mock.patch.object(sources, "MAX_BYTES", 40):
+            verdicts = self.verdicts([{"claim": "a", "url": f"{self.base}/plain", "quote": "line two"},
+                                      {"claim": "b", "url": f"{self.base}/doc", "quote": "stops adding"},
+                                      {"claim": "c", "url": f"{self.base}/plain", "quote": "line three"}])
+        self.assertEqual(verdicts, ["ok", "unreadable", "quote-missing"])
+
+    def test_a_quote_must_match_whole_words(self):
+        rows = [{"claim": "a", "url": f"{self.base}/pep", "quote": "toml"},
+                {"claim": "b", "url": f"{self.base}/pep", "quote": "omllib module"},
+                {"claim": "c", "url": f"{self.base}/pep", "quote": "tomllib module"}]
+        self.assertEqual(self.verdicts(rows), ["ok", "quote-missing", "ok"])
 
     def evidence(self, rows: list[dict]) -> str:
         return str(write(tree(self) / "evidence.jsonl", "\n".join(json.dumps(r) for r in rows) + "\n"))

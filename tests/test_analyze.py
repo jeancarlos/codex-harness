@@ -10,6 +10,7 @@ import time
 import types
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from codejig import analyze
 from tests.util import tree, write
@@ -260,6 +261,15 @@ class Parsers(unittest.TestCase):
         [f] = analyze.parse_semgrep(out, self.root, self.tmp)
         self.assertEqual((f.category, f.rule, f.line), ("security", "r.sql", 3))
 
+    def test_semgrep_errors_are_reported_with_the_findings(self):
+        out = json.dumps({"results": [{"check_id": "r.sql", "path": "a.py", "start": {"line": 3}, "extra": {"message": "sqli"}}],
+                          "errors": [{"type": "Timeout", "level": "warn", "message": "b.py timed out"}, {"type": "Syntax error"}]})
+        with self.assertRaises(analyze.Partial) as ctx:
+            analyze.parse_semgrep(out, self.root, self.tmp)
+        self.assertEqual([f.rule for f in ctx.exception.findings], ["r.sql"])
+        self.assertIn("2 errors", str(ctx.exception))
+        self.assertIn("b.py timed out", str(ctx.exception))
+
     def test_gitleaks_never_prints_secret(self):
         write(self.tmp / "gitleaks.json", json.dumps([{"RuleID": "aws", "File": "cfg.env", "StartLine": 2,
                                                       "Description": "AWS key", "Secret": "AKIAEXAMPLE", "Match": "AKIAEXAMPLE"}]))
@@ -328,6 +338,24 @@ class Run(unittest.TestCase):
         report = analyze.run_tools([self.tool("mypy", analyze.parse_mypy)], self.root, {"python"}, path=str(self.bindir))
         self.assertEqual(len(report.findings), 1)
         self.assertEqual(report.errors, [])
+
+    def test_a_failure_exit_is_an_error_even_when_findings_parsed(self):
+        fake_tool(self.bindir, "mypy", "a.py:1: error: bad  [misc]\n", code=2)
+        write(self.root / "mypy.ini", "[mypy]\n")
+        [mypy] = [t for t in analyze.TOOLS if t.name == "mypy"]
+        report = analyze.run_tools([mypy], self.root, {"python"}, path=str(self.bindir))
+        self.assertEqual(len(report.findings), 1)
+        self.assertIn("exit 2", report.errors[0][1])
+        fake_tool(self.bindir, "mypy", "a.py:1: error: bad  [misc]\n", code=1)
+        report = analyze.run_tools([mypy], self.root, {"python"}, path=str(self.bindir))
+        self.assertEqual((len(report.findings), report.errors), (1, []))
+
+    def test_a_partial_parse_keeps_findings_and_reports_the_error(self):
+        out = json.dumps({"results": [{"check_id": "r.sql", "path": "a.py", "start": {"line": 3}, "extra": {}}], "errors": [{"message": "rule crashed"}]})
+        fake_tool(self.bindir, "semgrep", out)
+        report = analyze.run_tools([self.tool("semgrep", analyze.parse_semgrep)], self.root, {"python"}, path=str(self.bindir))
+        self.assertEqual([f.rule for f in report.findings], ["r.sql"])
+        self.assertIn("rule crashed", report.errors[0][1])
 
     def test_unexpected_exit_without_findings_is_error(self):
         fake_tool(self.bindir, "mypy", "", code=3)
@@ -431,6 +459,17 @@ class Changed(unittest.TestCase):
     def test_bad_base(self):
         with self.assertRaisesRegex(ValueError, "nope"):
             analyze.changed(self.repo, "nope")
+
+    def test_a_failing_git_listing_is_an_error_not_an_empty_set(self):
+        real = analyze._git
+        for failing in ("diff", "ls-files"):
+            def fake(root, *args, failing=failing):
+                if args[0] == failing:
+                    return subprocess.CompletedProcess(args, 128, "", "fatal: index file corrupt\n")
+                return real(root, *args)
+            with self.subTest(failing=failing), mock.patch.object(analyze, "_git", fake), \
+                    self.assertRaisesRegex(ValueError, "index file corrupt"):
+                analyze.changed(self.repo, "main")
 
 
 class Render(unittest.TestCase):

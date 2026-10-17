@@ -91,6 +91,14 @@ class Rework(unittest.TestCase):
         self.assertFalse(reworked(target, [c("d", 15, hunks={"x.py": [(12, 1, 12, 1)]})]))
         self.assertFalse(reworked(target, [c("e", 5, hunks={"x.py": [(12, 0, 13, 4)]})]))
 
+    def test_lines_are_followed_through_intervening_commits(self):
+        target = c("t", 0, hunks={"x.py": [(0, 0, 10, 5)]})
+        shift = c("i", 2, hunks={"x.py": [(0, 0, 1, 20)]})
+        self.assertFalse(reworked(target, [c("old", 5, hunks={"x.py": [(12, 1, 12, 1)]}), shift, target]))
+        self.assertTrue(reworked(target, [c("new", 5, hunks={"x.py": [(32, 1, 32, 1)]}), shift, target]))
+        cut = c("j", 2, hunks={"x.py": [(1, 5, 1, 0)]})
+        self.assertTrue(reworked(target, [c("new", 5, hunks={"x.py": [(7, 1, 7, 1)]}), cut]))
+
     def test_revert_fixup_squash(self):
         target = c("abc123", 0, subject="add parser")
         self.assertTrue(reworked(target, [c("r", 1, 'Revert "add parser"', "This reverts commit abc123.")]))

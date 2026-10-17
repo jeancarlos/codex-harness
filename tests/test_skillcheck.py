@@ -75,6 +75,14 @@ class Static(unittest.TestCase):
                 self.assertIn("FAIL", [lv for lv, _ in skillcheck.static(d)])
 
 
+    def test_wrong_typed_case_fields_fail_without_a_traceback(self):
+        d = write(self.root / "demo" / "SKILL.md", SKILL).parent
+        for field in ("commands = 1", "output = 1", "commits = 1", "fixture = 1", "fixture = ['repo']", "commits = 'msg'"):
+            write(d / "evals.toml", f"[[case]]\nprompt = 'x'\n{field}\n")
+            with self.subTest(field=field):
+                fails = [m for lv, m in skillcheck.static(d) if lv == "FAIL"]
+                self.assertTrue(fails and all(m.startswith("evals.toml: case 1:") for m in fails), fails)
+
     def test_a_fixture_with_a_symlink_fails(self):
         d = write(self.root / "demo" / "SKILL.md", SKILL).parent
         write(d / "evals" / "repo" / "a.txt", "x\n")
@@ -243,6 +251,22 @@ class Review(unittest.TestCase):
         self.assertNotIn("MATERIAL>>>", ends)
         self.assertNotEqual(ends[0], ends[1])
         self.assertIn(f"<<<{ends[0][:-3]}\n", prompts[0])
+
+
+    def test_a_symlink_in_the_skill_is_never_sent_to_review(self):
+        root = tree(self)
+        skill = write(root / "demo" / "SKILL.md", SKILL).parent
+        secret = write(root / "outside" / "secret.txt", "TOP-SECRET\n")
+        try:
+            (skill / "notes.md").symlink_to(secret)
+            (skill / "refs").symlink_to(secret.parent, target_is_directory=True)
+        except OSError:
+            self.skipTest("no symlinks here")
+        with mock.patch.object(skillcheck.subprocess, "run") as run:
+            passed, text = skillcheck.review(skill, Path("codex"), root)
+        run.assert_not_called()
+        self.assertFalse(passed)
+        self.assertIn("symlink", text)
 
 
 class WithFakeCodex(unittest.TestCase):

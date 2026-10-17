@@ -19,7 +19,7 @@ TEST_PATH = re.compile(
 )
 ID_CHARS = r"[A-Za-z0-9_]+(?:[.-][A-Za-z0-9_]+)*"
 MAX_BYTES = 2_000_000
-LINE_ID = re.compile(rf"^\s*(?:[-*+]\s+|\d+[.)]\s+)?#?(?:REQ-)?({ID_CHARS})", re.IGNORECASE)
+LINE_ID = re.compile(rf"^\s*(?:[-*+]\s+|\d+[.)]\s+(?=#|REQ-|[\w.-]*\d))?#?(?:REQ-)?({ID_CHARS})", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -64,7 +64,10 @@ def _regex(pattern: str, id_part: str) -> re.Pattern:
 
 
 def trace(root: Path, ids: list[str], pattern: str = "REQ-{id}") -> Result:
-    wanted = {i.lower(): i for i in ids}
+    wanted: dict[str, str] = {}
+    for i in ids:
+        wanted.setdefault(i.lower(), i)
+    ids = list(wanted.values())
     finder = _regex(pattern, f"({ID_CHARS})")
     covered: dict[str, list[str]] = {}
     unknown: dict[str, list[str]] = {}

@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import sqlite3
@@ -16,10 +17,13 @@ CREATE TABLE IF NOT EXISTS quarantine (path TEXT NOT NULL, line INTEGER NOT NULL
 CREATE TABLE IF NOT EXISTS call_results (thread_id TEXT NOT NULL, call_id TEXT NOT NULL, exit_code INTEGER, skill TEXT, PRIMARY KEY (thread_id, call_id));
 CREATE TABLE IF NOT EXISTS skill_reads (thread_id TEXT NOT NULL, call_id TEXT NOT NULL, skill TEXT NOT NULL, PRIMARY KEY (thread_id, call_id, skill));
 CREATE TABLE IF NOT EXISTS guardian (thread_id TEXT NOT NULL, line INTEGER NOT NULL, ts TEXT, outcome TEXT NOT NULL, PRIMARY KEY (thread_id, line));
-CREATE VIEW IF NOT EXISTS turn_usage AS
+CREATE TABLE IF NOT EXISTS file_marks (path TEXT PRIMARY KEY, offset INTEGER NOT NULL, mark TEXT NOT NULL);
+DROP VIEW IF EXISTS turn_usage;
+CREATE VIEW turn_usage AS
   SELECT u.*, COALESCE(t.kind, 'main') AS kind, t.parent_id AS parent_id
   FROM usage u LEFT JOIN threads t ON t.id = u.thread_id
-  WHERE u.key NOT LIKE 'tc:%' OR u.thread_id NOT IN (SELECT thread_id FROM usage WHERE key NOT LIKE 'tc:%');
+  WHERE u.key NOT LIKE 'tc:%' OR NOT EXISTS (
+    SELECT 1 FROM usage r WHERE r.thread_id = u.thread_id AND r.key NOT LIKE 'tc:%' AND r.turn_id IS u.turn_id);
 DROP VIEW IF EXISTS call_view;
 CREATE VIEW call_view AS
   SELECT c.*, r.exit_code AS exit_code
@@ -30,6 +34,7 @@ CMD = re.compile(r'\bcmd:\s*"((?:[^"\\]|\\.)*)"')
 EXIT = re.compile(r'"exit_code"\s*:\s*(-?\d+)|Exit code:\s*(-?\d+)|exited with code\s+(-?\d+)')
 SKILL = re.compile(r"skills[/\\]+([A-Za-z0-9_.-]+)[/\\]+SKILL\.md")
 OUTPUTS = ("function_call_output", "custom_tool_call_output")
+MARK_BYTES = 4096
 
 
 def db_path() -> Path:
@@ -67,11 +72,8 @@ def _usage(u) -> tuple[int, ...] | None:
 
 
 def _custom_call(call_id: str, payload: dict) -> tuple[str, str, bool] | None:
-    text = payload.get("input")
-    m = CMD.search(text) if isinstance(text, str) else None
-    if not m:
-        return None
-    return call_id, _decode(m.group(1)), "require_escalated" in text
+    cells = cell_commands(payload)
+    return (call_id, *cells[0]) if cells else None
 
 
 def _function_call(call_id: str, payload: dict) -> tuple[str, str, bool] | None:
@@ -104,9 +106,15 @@ def _decode(raw: str) -> str:
         return raw
 
 
-def cell_commands(payload: dict) -> list[str]:
+def cell_commands(payload: dict) -> list[tuple[str, bool]]:
     text = payload.get("input") if payload.get("type") == "custom_tool_call" else None
-    return [_decode(m) for m in CMD.findall(text)] if isinstance(text, str) else []
+    found = list(CMD.finditer(text)) if isinstance(text, str) else []
+    starts, end = [], 0
+    for m in found:
+        starts.append(max(text.rfind("{", 0, m.start()), end))
+        end = m.end()
+    ends = [*starts[1:], len(text)] if found else []
+    return [(_decode(m.group(1)), "require_escalated" in text[a:b]) for m, a, b in zip(found, starts, ends, strict=True)]
 
 
 def _output_text(payload: dict) -> str:
@@ -144,7 +152,7 @@ def _response_item(con: sqlite3.Connection, thread: str, turn: str | None, ts: s
     call = tool_call(p)
     if call:
         rows = [(call[0], call[1], int(call[2]))]
-        rows += [(f"{call[0]}#{i}", cmd, 0) for i, cmd in enumerate(cell_commands(p)[1:], start=2)]
+        rows += [(f"{call[0]}#{i}", cmd, int(esc)) for i, (cmd, esc) in enumerate(cell_commands(p)[1:], start=2)]
         for call_id, cmd, escalated in rows:
             con.execute("INSERT OR IGNORE INTO calls (thread_id, call_id, turn_id, ts, cmd, escalated) VALUES (?,?,?,?,?,?)",
                         (thread, call_id, turn, ts, cmd, escalated))
@@ -249,18 +257,26 @@ def _record(con, st, raw, quarantine) -> None:
             handler(con, st, p, ts, quarantine)
 
 
+def _mark(f, offset: int) -> str:
+    start = max(0, offset - MARK_BYTES)
+    f.seek(start)
+    return hashlib.sha256(f.read(offset - start)).hexdigest()
+
+
 def _scan_file(con: sqlite3.Connection, path: Path) -> tuple[int, int]:
     size = path.stat().st_size
     row = con.execute("SELECT offset, thread_id, model, turn_id, line, last_total FROM files WHERE path=?", (str(path),)).fetchone()
     offset, *state = row or (0, None, None, None, 0, -1)
-    if size < offset:
-        offset, state = 0, [None, None, None, 0, -1]
-    if size == offset:
-        return 0, 0
+    mark = con.execute("SELECT offset, mark FROM file_marks WHERE path=?", (str(path),)).fetchone()
     with open(path, "rb") as f:
+        if size < offset or (mark and (mark[0] > size or _mark(f, mark[0]) != mark[1])):
+            offset, state = 0, [None, None, None, 0, -1]
+        if size == offset:
+            return 0, 0
         f.seek(offset)
         data = f.read()
-    end = data.rfind(b"\n") + 1
+        end = data.rfind(b"\n") + 1
+        con.execute("INSERT OR REPLACE INTO file_marks VALUES (?,?,?)", (str(path), offset + end, _mark(f, offset + end)))
     st = _Cursor(*state)
     count = bad = 0
     for raw in data[:end].split(b"\n")[:-1]:
@@ -284,7 +300,7 @@ def _scan_file(con: sqlite3.Connection, path: Path) -> tuple[int, int]:
 def scan(con: sqlite3.Connection, home: Path, rescan: bool = False) -> dict[str, int]:
     if rescan:
         with con:
-            for table in ("files", "threads", "usage", "calls", "compactions", "quarantine", "guardian", "call_results", "skill_reads"):
+            for table in ("files", "file_marks", "threads", "usage", "calls", "compactions", "quarantine", "guardian", "call_results", "skill_reads"):
                 con.execute(f"DELETE FROM {table}")
     summary = {"files": 0, "lines": 0, "quarantined": 0}
     for path in rollout_files(home):

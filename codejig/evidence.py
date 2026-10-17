@@ -93,23 +93,24 @@ def in_window(when: datetime, windows: list[tuple[datetime, datetime]]) -> bool:
     return any(start <= when <= end + GRACE for start, end in windows)
 
 
-def _same_lines(target: Commit, later: Commit) -> bool:
+def _touches(lines: dict[str, set[int]], later: Commit) -> bool:
+    return any(b and any(a <= x < a + b for x in lines.get(path, ())) for path, hunks in later.hunks.items() for a, b, _, _ in hunks)
+
+
+def _follow(lines: dict[str, set[int]], later: Commit) -> None:
     for path, hunks in later.hunks.items():
-        mine = target.hunks.get(path, ())
-        for a, b, _, _ in hunks:
-            if b and any(d and a <= n + d - 1 and n <= a + b - 1 for _, _, n, d in mine):
-                return True
-    return False
+        if path in lines:
+            lines[path] = {x + sum(d - b for a, b, _, d in hunks if x >= a + max(b, 1)) for x in lines[path]}
 
 
 def reworked(target: Commit, every: list[Commit], days: int = REWORK_DAYS) -> bool:
     end = target.when + timedelta(days=days)
     names = (f'Revert "{target.subject}"', f"fixup! {target.subject}", f"squash! {target.subject}")
-    for later in every:
-        if not target.when < later.when <= end:
-            continue
-        if later.subject in names or target.sha in later.body or _same_lines(target, later):
+    lines = {path: {x for _, _, n, d in hunks for x in range(n, n + d)} for path, hunks in target.hunks.items()}
+    for later in sorted((c for c in every if target.when < c.when <= end), key=lambda c: c.when):
+        if later.subject in names or target.sha in later.body or _touches(lines, later):
             return True
+        _follow(lines, later)
     return False
 
 

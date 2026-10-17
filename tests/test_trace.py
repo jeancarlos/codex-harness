@@ -43,6 +43,9 @@ class ReadIds(unittest.TestCase):
     def test_markdown_lines(self):
         self.assertEqual(trace.read_ids("REQ-12: login\n- REQ-13\n* #14 export\n1. REQ-15.\n2) 16\n"), ["12", "13", "14", "15", "16"])
 
+    def test_a_numbered_title_keeps_the_number_as_the_id(self):
+        self.assertEqual(trace.read_ids("123. Fix auth\n7) export works\n1. AUTH-3 login\n2. #44 x\n"), ["123", "7", "AUTH-3", "44"])
+
     def test_json_without_ids(self):
         self.assertEqual(trace.read_ids(json.dumps({"count": 0})), [])
 
@@ -75,6 +78,12 @@ class Trace(unittest.TestCase):
         self.assertEqual(result.covered["123"], ["Api.Tests/LoginTests.cs"])
         self.assertEqual(result.missing, ["77", "1"])
         self.assertEqual(result.unknown, {"900": ["web/x.test.ts"]})
+
+    def test_ids_differing_only_in_case_are_one_requirement(self):
+        write(self.root / "tests" / "test_auth.py", "# REQ-auth-1\n")
+        result = trace.trace(self.root, ["AUTH-1", "auth-1"])
+        self.assertEqual(result.covered, {"AUTH-1": ["tests/test_auth.py"]})
+        self.assertEqual(result.missing, [])
 
     def test_custom_pattern(self):
         write(self.root / "tests" / "test_wi.py", "# AB#4321\n")

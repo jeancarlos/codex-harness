@@ -34,6 +34,15 @@ class Scan(unittest.TestCase):
         collect.scan(self.con, self.home)
         self.assertEqual(totals(self.con, "main-1"), (6000, 4300, 160))
 
+    def test_token_counts_fill_turns_that_have_no_record(self):
+        home = home_with(self.root / "mixed", [])
+        lines = (FIX / "main.jsonl").read_text(encoding="utf-8").splitlines(keepends=True)
+        write(home / "sessions" / "rollout-m.jsonl", "".join(ln for ln in lines if '"response_id":"r2"' not in ln))
+        con = collect.connect(home / "usage.sqlite3")
+        self.addCleanup(con.close)
+        collect.scan(con, home)
+        self.assertEqual(totals(con, "main-1"), (6000, 4300, 160))
+
     def test_legacy_uses_last_usage_and_skips_duplicates(self):
         collect.scan(self.con, self.home)
         self.assertEqual(totals(self.con, "old-1"), (230, 100, 70))
@@ -98,6 +107,36 @@ class Scan(unittest.TestCase):
         self.assertEqual(totals(con, "main-1"), (6000, 4300, 160))
 
 
+    def test_a_replaced_rollout_is_read_again_from_the_start(self):
+        home = home_with(self.root / "r", [])
+        f = home / "sessions" / "rollout-r.jsonl"
+        text = (FIX / "main.jsonl").read_text(encoding="utf-8")
+        write(f, text)
+        con = collect.connect(home / "usage.sqlite3")
+        self.addCleanup(con.close)
+        collect.scan(con, home)
+        write(f, text.replace("main-1", "main-2"))
+        collect.scan(con, home)
+        self.assertEqual(totals(con, "main-2"), (6000, 4300, 160))
+        write(f, text.replace("main-1", "main-3") + text.replace("main-1", "main-3"))
+        collect.scan(con, home)
+        self.assertEqual(con.execute("SELECT kind FROM threads WHERE id='main-3'").fetchone(), ("main",))
+
+    def test_an_offset_without_a_mark_is_still_trusted(self):
+        home = home_with(self.root / "o", [])
+        f = home / "sessions" / "rollout-o.jsonl"
+        lines = (FIX / "main.jsonl").read_text(encoding="utf-8").splitlines(keepends=True)
+        write(f, "".join(lines[:5]))
+        con = collect.connect(home / "usage.sqlite3")
+        self.addCleanup(con.close)
+        collect.scan(con, home)
+        con.execute("DELETE FROM file_marks")
+        write(f, "".join(lines))
+        collect.scan(con, home)
+        self.assertEqual(totals(con, "main-1"), (6000, 4300, 160))
+        self.assertEqual(con.execute("SELECT COUNT(*) FROM quarantine").fetchone()[0], 0)
+
+
 class ToolCall(unittest.TestCase):
     def test_forms(self):
         self.assertEqual(collect.tool_call({"type": "function_call", "call_id": "a", "arguments": '{"command": ["git", "push"], "sandbox_permissions": "require_escalated"}'}), ("a", "git push", True))
@@ -105,6 +144,20 @@ class ToolCall(unittest.TestCase):
         self.assertIsNone(collect.tool_call({"type": "custom_tool_call", "call_id": "a", "input": "text(await tools.view_image({path:\"x\"}))"}))
         self.assertEqual(collect.tool_call({"type": "custom_tool_call", "call_id": "b", "input": 'tools.exec_command({cmd:"echo \\"hi\\""})'}), ("b", 'echo "hi"', False))
         self.assertIsNone(collect.tool_call({"type": "message"}))
+
+    def test_each_command_in_a_cell_keeps_its_own_escalation(self):
+        cell = ('await tools.exec_command({cmd:"ls"}); '
+                'await tools.exec_command({sandbox_permissions:"require_escalated", cmd:"curl -sI https://x"}); '
+                'await tools.exec_command({cmd:"git push", sandbox_permissions:"require_escalated", justification:"push"}); '
+                'await tools.exec_command({cmd:"pwd"})')
+        p = {"type": "custom_tool_call", "call_id": "m", "input": cell}
+        self.assertEqual(collect.tool_call(p), ("m", "ls", False))
+        self.assertEqual(collect.cell_commands(p), [("ls", False), ("curl -sI https://x", True), ("git push", True), ("pwd", False)])
+        con = collect.connect(tree(self) / "usage.sqlite3")
+        self.addCleanup(con.close)
+        collect._response_item(con, "t", None, None, p)
+        self.assertEqual(con.execute("SELECT call_id, escalated FROM calls ORDER BY call_id").fetchall(),
+                         [("m", 0), ("m#2", 1), ("m#3", 1), ("m#4", 0)])
 
 
 class Robustness(unittest.TestCase):
@@ -193,6 +246,17 @@ class Migration(unittest.TestCase):
         self.assertEqual(con.execute("SELECT cmd, exit_code FROM call_view").fetchall(), [("git status", None)])
         self.assertEqual(con.execute("SELECT COUNT(*) FROM guardian").fetchone()[0], 0)
         collect.connect(db).close()
+
+    def test_an_old_turn_usage_view_is_replaced(self):
+        db = tree(self) / "usage.sqlite3"
+        old = sqlite3.connect(db)
+        old.executescript("CREATE TABLE usage (thread_id TEXT NOT NULL, key TEXT NOT NULL, turn_id TEXT, ts TEXT, model TEXT, input INTEGER, cached INTEGER, output INTEGER, reasoning INTEGER, PRIMARY KEY (thread_id, key));"
+                          "CREATE VIEW turn_usage AS SELECT u.* FROM usage u WHERE u.key NOT LIKE 'tc:%';"
+                          "INSERT INTO usage VALUES ('t', 'tc:3', 'a', NULL, NULL, 5, 0, 1, 0);")
+        old.close()
+        con = collect.connect(db)
+        self.addCleanup(con.close)
+        self.assertEqual(con.execute("SELECT SUM(input) FROM turn_usage").fetchone(), (5,))
 
     def test_older_collectors_can_still_write(self):
         db = tree(self) / "usage.sqlite3"

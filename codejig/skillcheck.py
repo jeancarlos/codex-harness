@@ -84,16 +84,12 @@ def unknown_commands(text: str) -> list[str]:
     return sorted({c for c in CODE_JIG_CMD.findall(code) if c not in known})
 
 
-def _linked(p: Path) -> bool:
-    return p.is_symlink() or (hasattr(p, "is_junction") and p.is_junction())
-
-
 def check_fixture(skill: Path, name: str) -> Path:
     evals = skill / "evals"
     src = evals / name
     if not FIXTURE_NAME.fullmatch(name) or not src.is_dir():
         raise ValueError("fixture must name a folder directly inside evals/")
-    if _linked(evals) or _linked(src) or any(_linked(f) for f in src.rglob("*")) \
+    if install.linked(evals) or install.linked(src) or any(install.linked(f) for f in src.rglob("*")) \
             or not src.resolve().is_relative_to(skill.resolve() / "evals"):
         raise ValueError("the fixture is or holds a symlink, which could hand Codex files from outside it")
     return src
@@ -116,22 +112,23 @@ def _check_run_settings(i: int, case: Case) -> None:
 
 
 def _check_field_types(i: int, case: Case) -> None:
-    if not all(isinstance(c, dict) and isinstance(c.get("message"), str) and set(c) == {"message"} for c in case.commits):
-        raise ValueError(f"case {i}: each commits entry is a table with only a message")
-    if not (all(isinstance(x, str) for x in [*case.commands, *case.output]) and isinstance(case.commands, list)
-            and isinstance(case.output, list) and type(case.spawns) is int and type(case.read_skill) is bool):
-        raise ValueError(f"case {i}: commands and output are lists of strings, spawns a number, read_skill true or false")
+    if not isinstance(case.commits, list) or not all(
+            isinstance(c, dict) and isinstance(c.get("message"), str) and set(c) == {"message"} for c in case.commits):
+        raise ValueError(f"case {i}: commits is a list of tables with only a message")
+    if not (isinstance(case.commands, list) and isinstance(case.output, list) and isinstance(case.fixture, str)
+            and all(isinstance(x, str) for x in [*case.commands, *case.output]) and type(case.spawns) is int and type(case.read_skill) is bool):
+        raise ValueError(f"case {i}: commands and output are lists of strings, fixture a folder name, spawns a number, read_skill true or false")
 
 
 def _load_case(skill: Path, i: int, raw) -> Case:
     case = _new_case(i, raw)
+    _check_field_types(i, case)
     _check_run_settings(i, case)
     if case.fixture:
         try:
             check_fixture(skill, case.fixture)
         except ValueError as e:
             raise ValueError(f"case {i}: {e}") from None
-    _check_field_types(i, case)
     for pattern in case.output:
         re.compile(pattern)
     return case
@@ -218,7 +215,11 @@ def judge(name: str, case: Case, run: Run) -> list[str]:
 
 
 def _material(skill: Path) -> str:
-    files = [f for f in sorted(skill.rglob("*")) if f.is_file() and install.installed_file(skill, f)
+    entries = sorted(skill.rglob("*"))
+    linked = [f for f in entries if install.linked(f)]
+    if linked:
+        raise ValueError(f"{linked[0].relative_to(skill).as_posix()} is a symlink; the review sends only files inside the skill, remove it")
+    files = [f for f in entries if f.is_file() and install.installed_file(skill, f)
              and f.suffix in (".md", ".toml", ".py", ".sh", ".ps1", ".txt", ".json")]
     return "\n\n".join(f"=== {f.relative_to(skill).as_posix()} ===\n{f.read_text(encoding='utf-8', errors='replace')}" for f in files)
 
@@ -236,7 +237,11 @@ def review(skill: Path, bin_path: Path, home: Path) -> tuple[bool, str]:
                "-c", 'approvals_reviewer="user"', "-c", 'web_search="disabled"', "--skip-git-repo-check", "-o", str(out), "-"]
         marker = f"MATERIAL-{secrets.token_hex(8)}"
         try:
-            r = subprocess.run(cmd, input=_rubric(marker) + _material(skill) + f"\n{marker}>>>\n", capture_output=True, text=True,
+            material = _material(skill)
+        except ValueError as e:
+            return False, f"the skill was not reviewed: {e}"
+        try:
+            r = subprocess.run(cmd, input=_rubric(marker) + material + f"\n{marker}>>>\n", capture_output=True, text=True,
                                encoding="utf-8", errors="replace", cwd=tmp, env=probe.env_for(home), timeout=900, check=False)
         except subprocess.TimeoutExpired:
             return False, "codex review timed out after 900s, the skill was not reviewed"

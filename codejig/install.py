@@ -5,6 +5,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -67,13 +68,23 @@ def _backup_name(path: Path) -> Path:
     return backup
 
 
+def _through_link(path: Path) -> Path:
+    if not path.is_symlink():
+        return path
+    real = Path(os.path.realpath(path))
+    if not real.is_file():
+        raise ValueError(f"{path} is a symlink to {real}, which is missing or not a file; fix or remove the link")
+    return real
+
+
 def write_generated(path: Path, text: str) -> Path | None:
     path.parent.mkdir(parents=True, exist_ok=True)
+    real = _through_link(path)
     backup = None
-    if path.exists() and not is_generated(path):
+    if real.exists() and not is_generated(real):
         backup = _backup_name(path)
-        shutil.copy2(path, backup)
-    atomic_write(path, text.encode("utf-8"))
+        shutil.copy2(real, backup)
+    atomic_write(real, text.encode("utf-8"))
     return backup
 
 
@@ -140,14 +151,15 @@ def merged_hooks(path: Path, posix: str, windows: str, watermark: tuple[str, str
 
 
 def write_merged(path: Path, text: str) -> Path | None:
-    if path.is_file() and path.read_bytes() == text.encode("utf-8"):
+    real = _through_link(path)
+    if real.is_file() and real.read_bytes() == text.encode("utf-8"):
         return None
     path.parent.mkdir(parents=True, exist_ok=True)
     backup = None
-    if path.exists():
+    if real.exists():
         backup = _backup_name(path)
-        shutil.copy2(path, backup)
-    atomic_write(path, text.encode("utf-8"))
+        shutil.copy2(real, backup)
+    atomic_write(real, text.encode("utf-8"))
     return backup
 
 
@@ -190,8 +202,17 @@ SKILL_SIDECAR = ".code-jig"
 NOT_INSTALLED = (SKILL_SIDECAR, ".skill-check", "evals.toml")
 
 
+def linked(p: Path) -> bool:
+    return p.is_symlink() or (hasattr(p, "is_junction") and p.is_junction())
+
+
 def _skill_dirs(root: Path) -> dict[str, Path]:
-    return {p.parent.name: p.parent for p in sorted(root.glob("*/SKILL.md"))} if root.is_dir() else {}
+    found = {p.parent.name: p.parent for p in sorted(root.glob("*/SKILL.md"))} if root.is_dir() else {}
+    for d in found.values():
+        link = next((p for p in [d, *sorted(d.rglob("*"))] if (p == d or installed_file(d, p)) and linked(p)), None)
+        if link:
+            raise ValueError(f"{link} is a symlink; skills are installed without symlinks, replace it with the file it points at")
+    return found
 
 
 def skill_sources(core: Path, overlay_root: Path) -> dict[str, Path]:
@@ -207,11 +228,20 @@ def installed_file(src: Path, f: Path) -> bool:
     return "__pycache__" not in rel.parts and not (len(rel.parts) == 1 and rel.name in NOT_INSTALLED) and rel.parts[0] != "evals"
 
 
-def tree_digest(src: Path) -> str:
+def _digest(src: Path, keep) -> str:
     h = hashlib.sha256()
-    for f in sorted((p for p in src.rglob("*") if p.is_file() and installed_file(src, p)), key=lambda p: p.relative_to(src).parts):
+    for f in sorted((p for p in src.rglob("*") if p.is_file() and keep(src, p)), key=lambda p: p.relative_to(src).parts):
         h.update(f.relative_to(src).as_posix().encode() + b"\0" + f.read_bytes() + b"\0")
     return h.hexdigest()
+
+
+def tree_digest(src: Path) -> str:
+    return _digest(src, installed_file)
+
+
+def _not_sidecar(src: Path, f: Path) -> bool:
+    rel = f.relative_to(src).parts
+    return "__pycache__" not in rel and rel != (SKILL_SIDECAR,)
 
 
 def release_digest(root: Path) -> str:
@@ -228,7 +258,7 @@ def release_digest(root: Path) -> str:
 
 def _own_skill(d: Path) -> bool:
     side = d / SKILL_SIDECAR
-    return side.is_file() and side.read_text(encoding="utf-8").strip() == tree_digest(d)
+    return side.is_file() and side.read_text(encoding="utf-8").strip() == _digest(d, _not_sidecar)
 
 
 def _ignore_installed(src: Path):
@@ -238,16 +268,29 @@ def _ignore_installed(src: Path):
 def _install_skill(name: str, src: Path, dest: Path) -> list[str]:
     lines = []
     target = dest / name
-    if target.exists() and not _own_skill(target):
-        backups = dest.parent / "skills-backup"
-        backups.mkdir(parents=True, exist_ok=True)
-        backup = _backup_name(backups / name)
-        target.replace(backup)
-        lines.append(f"moved your previous {target} to {backup}")
-    elif target.exists():
-        shutil.rmtree(target)
-    shutil.copytree(src, target, ignore=_ignore_installed(src))
-    (target / SKILL_SIDECAR).write_text(tree_digest(target) + "\n", encoding="utf-8", newline="\n")
+    tmp = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".code-jig-{name}-"))
+    try:
+        staged = tmp / name
+        shutil.copytree(src, staged, ignore=_ignore_installed(src))
+        (staged / SKILL_SIDECAR).write_text(tree_digest(staged) + "\n", encoding="utf-8", newline="\n")
+        old = None
+        if target.is_symlink() or target.exists():
+            if _own_skill(target):
+                old = tmp / "old"
+            else:
+                backups = dest.parent / "skills-backup"
+                backups.mkdir(parents=True, exist_ok=True)
+                old = _backup_name(backups / name)
+                lines.append(f"moved your previous {target} to {old}")
+            target.replace(old)
+        try:
+            staged.replace(target)
+        except OSError:
+            if old:
+                old.replace(target)
+            raise
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
     lines.append(f"wrote {target}")
     return lines
 
@@ -292,6 +335,7 @@ def role_files(core: Path, ts: list[tiers.Tier]) -> dict[str, str]:
 
 def plan(core: Path, ov: Overlay, home: Path, claude_code_settings: Path | None = None) -> list[tuple[Path, str]]:
     skill_sources(core, ov.root)
+    home = Path(os.path.abspath(home))
     policy = tiers.extra_policy(ov.root)
     outputs = [(home / "AGENTS.md", render_agents(core, ov.root))]
     ts = tiers.load(core, ov.root)
